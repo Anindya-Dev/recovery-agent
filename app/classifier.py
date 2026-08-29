@@ -18,7 +18,7 @@ def decide(payment: FailedPayment)-> RecoveryDecision:
         if payment.attempt_count<2:
             return RecoveryDecision(
                 record_id=payment.record_id,
-                action=RecoveryAction.RETRY_DELAYED,
+                action=RecoveryAction.RETRY_DELAYED, 
                 reasoning=("Payment failed due to insufficient funds and this is the "
                            "customer's first attempt, so the payment will be retried after 24 hours."),
                 confidence=1.0,
@@ -43,7 +43,7 @@ def decide(payment: FailedPayment)-> RecoveryDecision:
     if payment.failure_reason=="bank_timeout":
         return RecoveryDecision(
             record_id=payment.record_id,
-            action=RecoveryAction.RETRY_NOW,
+            action=RecoveryAction.RETRY_NOW, # RETRY_NOW: retry_delay_minutes can be None or between 1 and 20 minutes
             reasoning=("The payment failed because of a temporary bank timeout, "
                        "so retrying after a short delay may succeed."),
             confidence=1.0,
@@ -71,5 +71,4 @@ def decide(payment: FailedPayment)-> RecoveryDecision:
     raise ValueError(
     f"Unsupported failure reason: {payment.failure_reason}"
 )
-
 
