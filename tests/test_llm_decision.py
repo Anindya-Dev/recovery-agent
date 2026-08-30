@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from .llm import llm_decide
-from .models import FailedPayment
+from app.llm import llm_decide
+from app.models import FailedPayment
 
 
 payment = FailedPayment(
