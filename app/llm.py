@@ -14,6 +14,49 @@ client = OpenAI(
     api_key=os.getenv("NVIDIA_API_KEY"),
 )
 
+RECOVERY_DECISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "record_id": {"type": "string"},
+        "action": {
+            "type": "string",
+            "enum": [
+                "retry_now",
+                "retry_delayed",
+                "send_payment_link",
+                "escalate_to_human",
+            ],
+        },
+        "reasoning": {
+            "type": "string",
+            "maxLength": 160,
+        },
+        "confidence": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+        },
+        "retry_delay_minutes": {
+            "anyOf": [
+                {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1440,
+                },
+                {"type": "null"},
+            ],
+        },
+    },
+    "required": [
+        "record_id",
+        "action",
+        "reasoning",
+        "confidence",
+        "retry_delay_minutes",
+    ],
+    "additionalProperties": False,
+}
+
 def llm_decide(payment: FailedPayment)-> RecoveryDecision:
     system_prompt = """
 You are a payment recovery decision assistant.
@@ -52,14 +95,27 @@ action must be exactly one of:
 
 confidence must be a number between 0.0 and 1.0.
 
-If action is "retry_now", retry_delay_minutes must be 0.
+reasoning must be one short sentence under 20 words.
+Do not explain step by step.
+Do not include analysis.
 
-If action is "retry_delayed", retry_delay_minutes must be a positive integer.
+If action is "retry_now", retry_delay_minutes must be null or an integer between 1 and 20.
+
+If action is "retry_delayed", retry_delay_minutes must be an integer between 30 and 1440.
 
 If action is "send_payment_link" or "escalate_to_human",
 retry_delay_minutes must be null.
 
 Base your reasoning only on the payment information provided.
+
+Return exactly this shape:
+{
+  "record_id": "same record_id from input",
+  "action": "retry_now",
+  "reasoning": "one short sentence under 20 words",
+  "confidence": 0.8,
+  "retry_delay_minutes": 10
+}
 """
     payment_data={
         "record_id": payment.record_id,
@@ -86,6 +142,13 @@ Base your reasoning only on the payment information provided.
         ],
         temperature=0.2,
         max_tokens=500,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "recovery_decision",
+                "schema": RECOVERY_DECISION_SCHEMA,
+            },
+        },
         extra_body={
             "chat_template_kwargs":{
                 "enable_thinking":False
