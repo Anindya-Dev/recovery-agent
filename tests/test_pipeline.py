@@ -1,10 +1,13 @@
 from datetime import datetime
+from unittest.mock import patch
 
-from app.models import FailedPayment, RecoveryAction
+from app.models import FailedPayment, RecoveryAction, RecoveryDecision
 from app.pipeline import recover_payment
 
 
-def test_pipeline_handles_ambiguous_failure_with_llm():
+@patch("app.pipeline.save_audit_entry")
+@patch("app.pipeline.llm_decide")
+def test_pipeline_handles_ambiguous_failure_with_llm(mock_llm_decide, mock_save_audit_entry):
     payment = FailedPayment(
         record_id="pipeline_llm_001",
         order_id="order_001",
@@ -21,14 +24,18 @@ def test_pipeline_handles_ambiguous_failure_with_llm():
         is_subscription=False,
     )
 
+    mock_llm_decide.return_value = RecoveryDecision(
+        record_id="pipeline_llm_001",
+        action=RecoveryAction.RETRY_NOW,
+        reasoning="Issuer decline can be retried once.",
+        confidence=0.85,
+        retry_delay_minutes=5,
+    )
+
     decision = recover_payment(payment)
 
     assert decision.record_id == "pipeline_llm_001"
-    assert decision.action in (
-        RecoveryAction.RETRY_NOW,
-        RecoveryAction.RETRY_DELAYED,
-        RecoveryAction.SEND_PAYMENT_LINK,
-        RecoveryAction.ESCALATE_TO_HUMAN,
-    )
-
+    assert decision.action == RecoveryAction.RETRY_NOW
     assert 0.0 <= decision.confidence <= 1.0
+    mock_llm_decide.assert_called_once_with(payment)
+    mock_save_audit_entry.assert_called_once()

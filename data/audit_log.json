@@ -726,18 +726,5 @@
     "confidence": 1.0,
     "retry_delay_minutes": 10,
     "validator_overridden": false
-  },
-  {
-    "record_id": "pipeline_llm_001",
-    "order_id": "order_001",
-    "failure_reason": "issuer_declined",
-    "amount": 821.0,
-    "attempt_count": 1,
-    "source": "llm",
-    "action": "retry_now",
-    "reasoning": "Card issuer declined, first attempt, safe to retry immediately",
-    "confidence": 0.85,
-    "retry_delay_minutes": 5,
-    "validator_overridden": false
   }
 ]
