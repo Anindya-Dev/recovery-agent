@@ -726,5 +726,18 @@
     "confidence": 1.0,
     "retry_delay_minutes": 10,
     "validator_overridden": false
+  },
+  {
+    "record_id": "pay_webhook_test_001",
+    "order_id": "order_webhook_test_001",
+    "failure_reason": "expired_card",
+    "amount": 100.0,
+    "attempt_count": 1,
+    "source": "classifier",
+    "action": "send_payment_link",
+    "reasoning": "The customer's card has expired, so retrying the same payment method is unlikely to succeed. A payment link provides an alternative.",
+    "confidence": 1.0,
+    "retry_delay_minutes": null,
+    "validator_overridden": false
   }
 ]

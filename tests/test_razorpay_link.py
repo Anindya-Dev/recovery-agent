@@ -11,7 +11,7 @@ if __name__ == "__main__":
         merchant_id="merchant_test_001",
         customer_name="Test Customer",
         customer_email="test@example.com",
-        customer_phone="9123456780",
+        customer_phone="9123456788",
         amount=100.0,
         payment_method="card",
         failure_reason="insufficient_funds",

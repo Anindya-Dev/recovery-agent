@@ -72,8 +72,7 @@ recovery-agent/
 ├── generate_failed_payments.py
 ├── main.py
 ├── requirements.txt
-├── README.md
-└── VIDEO.md
+└── README.md
 ```
 
 ## Decision Logic
@@ -239,7 +238,7 @@ External API calls are mocked in automated tests. Manual smoke scripts are kept 
 Current local result:
 
 ```text
-17 passed
+19 passed
 ```
 
 ## Design Decisions
