@@ -1,26 +1,28 @@
 # recovery-agent
 
-`recovery-agent` is a Python payment-recovery agent built for Razorpay's AI Builder Internship 2026, Track 3: AI Revenue Recovery. Failed payments are direct revenue leakage: the customer intended to pay, the merchant expected the money, but the transaction failed somewhere in the payment flow. This project processes a batch of failed payment records, classifies the failure, selects a bounded recovery action, validates that action against safety rules, and prints a recovery summary. The goal is not just to retry payments, but to make every decision explainable, auditable, and safe.
+`recovery-agent` is a Python payment-recovery agent built for Razorpay's AI Builder Internship 2026, Track 3: AI Revenue Recovery. It takes failed payment records, decides the safest recovery action, executes supported recovery actions in test mode, and writes an audit trail for every decision. The project is intentionally small: the goal is to show a working, explainable recovery workflow rather than hide the core logic behind unnecessary abstractions.
 
-## Track Alignment
+## Problem
 
-Track 3 asks for an agent that can detect revenue at risk, choose the right intervention, execute a bounded recovery workflow, and show measured recovery across a batch.
+Failed payments are lost revenue unless they are handled quickly and safely. Some failures are temporary, such as network errors or bank timeouts. Others need a different customer action, such as an expired card or repeated insufficient funds. A recovery agent needs to decide what to do, avoid unsafe repeated retries, and explain every decision so a merchant or reviewer can audit the workflow.
 
-This project focuses on payment-failure recovery:
+## What It Does
 
-- It reads failed payment records from `data/failed_payments.json`.
-- It models each failed payment using Pydantic.
-- It applies deterministic rules for common, high-confidence cases.
-- It sends ambiguous cases to an LLM decision function.
-- It validates the final decision before accepting it.
-- It reports the action distribution and escalated cases.
+- Loads synthetic failed payment records from `data/failed_payments.json`.
+- Validates records with Pydantic models.
+- Applies rule-based decisions for clear failure reasons.
+- Uses an LLM for ambiguous reasons such as `issuer_declined` and `gateway_error`.
+- Uses structured JSON output for LLM decisions.
+- Validates every decision before accepting it.
+- Creates Razorpay test-mode payment links for `send_payment_link` actions.
+- Saves decision history to `data/audit_log.json`.
+- Exposes a webhook endpoint for simulated Razorpay `payment.failed` events.
+- Includes tests for classifier, validator, executor, pipeline, and webhook behavior.
 
 ## Architecture
 
-The project follows a simple pipeline:
-
 ```text
-failed payment data
+failed payment batch or webhook
         |
         v
 FailedPayment model
@@ -28,27 +30,18 @@ FailedPayment model
         v
 rule-based classifier
         |
-        +-- known case --> RecoveryDecision
+        +-- clear case --> RecoveryDecision
         |
-        +-- ambiguous case --> LLM decision
+        +-- ambiguous case --> LLM structured JSON decision
         |
         v
 safety validator
         |
         v
-batch recovery report
+executor / audit log / report
 ```
 
-The main recovery path is implemented in:
-
-```text
-app/run_recovery.py
-app/pipeline.py
-app/classifier.py
-app/llm.py
-app/validator.py
-app/models.py
-```
+The same recovery pipeline is used by both the batch runner and the webhook endpoint.
 
 ## Project Structure
 
@@ -56,101 +49,99 @@ app/models.py
 recovery-agent/
 ├── app/
 │   ├── __init__.py
-│   ├── models.py
-│   ├── classifier.py
-│   ├── validator.py
-│   ├── pipeline.py
-│   ├── llm.py
-│   ├── executor.py
 │   ├── audit.py
-│   └── run_recovery.py
+│   ├── classifier.py
+│   ├── executor.py
+│   ├── llm.py
+│   ├── models.py
+│   ├── pipeline.py
+│   ├── razorpay_client.py
+│   ├── run_recovery.py
+│   ├── validator.py
+│   └── webhook.py
 ├── data/
+│   ├── audit_log.json
 │   └── failed_payments.json
 ├── tests/
 │   ├── test_classifier.py
-│   ├── test_validator.py
+│   ├── test_executor.py
 │   ├── test_pipeline.py
-│   └── run_batch.py
+│   ├── test_razorpay_link.py
+│   ├── test_validator.py
+│   └── test_webhook.py
 ├── generate_failed_payments.py
-├── requirements.txt
 ├── main.py
-└── README.md
+├── requirements.txt
+├── README.md
+└── VIDEO.md
 ```
 
-## Data Model
+## Decision Logic
 
-Each failed payment record contains:
+The classifier starts with deterministic rules because common payment failures usually have clear recovery behavior.
+
+| Failure / condition | Action |
+| --- | --- |
+| `attempt_count >= 3` | `escalate_to_human` |
+| `insufficient_funds`, first attempt | `retry_delayed` |
+| `insufficient_funds`, multiple attempts | `send_payment_link` |
+| `expired_card` | `send_payment_link` |
+| `bank_timeout` | `retry_now` |
+| `network_error` | `retry_now` |
+| `invalid_otp` | `retry_now` |
+| `issuer_declined` | LLM decision |
+| `gateway_error` | LLM decision |
+
+This split keeps predictable cases fast and explainable, while still allowing ambiguous gateway or issuer responses to be handled by an LLM.
+
+## LLM Structured Output
+
+`app/llm.py` uses NVIDIA's OpenAI-compatible endpoint:
+
+```text
+https://integrate.api.nvidia.com/v1
+```
+
+The LLM returns a structured `RecoveryDecision` object:
 
 ```json
 {
-  "record_id": "fail_0001",
-  "order_id": "order_100001",
-  "merchant_id": "merch_grocerly",
-  "customer_name": "Aarav Sharma",
-  "customer_email": "aarav.sharma1@example.com",
-  "customer_phone": "+919876543210",
-  "amount": 1499.0,
-  "payment_method": "card",
-  "failure_reason": "insufficient_funds",
-  "attempt_count": 1,
-  "first_failed_at": "2026-08-20T10:30:00+00:00",
-  "last_attempt_at": "2026-08-20T10:30:00+00:00",
-  "is_subscription": false
+  "record_id": "fail_0002",
+  "action": "retry_now",
+  "reasoning": "Issuer declined once, safe to retry.",
+  "confidence": 0.85,
+  "retry_delay_minutes": 5
 }
 ```
 
-The fields are represented in `app/models.py` using Pydantic models:
-
-- `FailedPayment`: input payment failure record
-- `RecoveryAction`: allowed recovery actions
-- `RecoveryDecision`: final decision returned by the system
-
-## Recovery Actions
-
-The agent can choose one of four actions:
-
-| Action | Meaning |
-| --- | --- |
-| `retry_now` | Retry after a very short delay for likely transient failures. |
-| `retry_delayed` | Retry later, usually when the customer may need time to resolve the issue. |
-| `send_payment_link` | Give the customer a fresh way to complete payment. |
-| `escalate_to_human` | Stop automation and send the case for manual handling. |
-
-## How Decisions Are Made
-
-The classifier uses deterministic rules first. These rules are used when the failure reason has a clear recovery path.
-
-Examples:
-
-- `insufficient_funds` with one attempt -> `retry_delayed`
-- `insufficient_funds` after multiple attempts -> `send_payment_link`
-- `expired_card` -> `send_payment_link`
-- `bank_timeout` -> `retry_now`
-- `network_error` -> `retry_now`
-- `invalid_otp` -> `retry_now`
-- `attempt_count >= 3` -> `escalate_to_human`
-
-Some failure reasons are intentionally treated as ambiguous:
-
-- `issuer_declined`
-- `gateway_error`
-
-For these cases, `app/classifier.py` raises a `ValueError`. The pipeline catches that and calls `app/llm.py`, which asks an LLM to return a structured `RecoveryDecision`.
-
-This split is deliberate. Rule-based logic is faster, cheaper, easier to test, and easier to explain. The LLM is reserved for cases where the failure reason needs more judgment.
+An earlier version only asked the model to return JSON in the prompt. That was not reliable enough: the model sometimes returned long or incomplete reasoning text, which caused `json.loads()` to fail. The current version uses a JSON schema through `response_format`, keeps reasoning short, and still validates the decision in code after the model returns.
 
 ## Safety Validation
 
-The LLM decision is not trusted blindly. Every decision passes through `validate_decision()` in `app/validator.py`.
+The LLM does not get final authority. `app/validator.py` enforces safety rules:
 
-The validator enforces safety rules such as:
+- `attempt_count >= 3` always escalates to a human.
+- `retry_now` can use `null` or a delay between 1 and 20 minutes.
+- `retry_delayed` must use a delay between 30 and 1440 minutes.
+- `send_payment_link` and `escalate_to_human` cannot include retry delays.
 
-- If `attempt_count >= 3`, the final action must be `escalate_to_human`.
-- `retry_now` can only have no delay or a short delay between 1 and 20 minutes.
-- `retry_delayed` must have a delay between 30 minutes and 24 hours.
-- `send_payment_link` and `escalate_to_human` must not include retry delays.
+If a decision violates these rules, the validator overrides it with `escalate_to_human`.
 
-If a decision violates these constraints, the validator overrides it with a safe escalation.
+## Razorpay Integration
+
+`app/razorpay_client.py` creates Razorpay test-mode payment links. `app/executor.py` calls this when the final action is `send_payment_link`.
+
+Retries are currently simulated because real retry behavior depends on payment method, mandate status, and customer authorization. Payment Links are implemented because they are a clear, safe recovery action for cases like expired cards or repeated insufficient funds.
+
+## Webhook Endpoint
+
+`app/webhook.py` exposes a local FastAPI endpoint for simulated Razorpay failed-payment events:
+
+```text
+POST /webhooks/razorpay/payment-failed
+```
+
+This demonstrates how the agent would sit behind a Razorpay `payment.failed` webhook in a real integration.
 
 ## Setup
 
@@ -160,16 +151,10 @@ Create and activate a virtual environment:
 python -m venv .venv
 ```
 
-On Windows PowerShell:
+Windows PowerShell:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-```
-
-On macOS/Linux:
-
-```bash
-source .venv/bin/activate
 ```
 
 Install dependencies:
@@ -178,24 +163,32 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Create a `.env` file:
+Create `.env`:
 
 ```text
-NVIDIA_API_KEY=your_nvidia_api_key_here
+NVIDIA_API_KEY=your_nvidia_api_key
+RAZORPAY_KEY_ID=rzp_test_your_key_id
+RAZORPAY_KEY_SECRET=your_test_key_secret
 ```
 
-The LLM client in `app/llm.py` uses NVIDIA's OpenAI-compatible endpoint:
+## Run
 
-```text
-https://integrate.api.nvidia.com/v1
-```
-
-## Running The Project
-
-Run the full recovery pipeline:
+Run the batch recovery demo:
 
 ```bash
 python -m app.run_recovery
+```
+
+or:
+
+```bash
+python main.py
+```
+
+Run the webhook server:
+
+```bash
+uvicorn app.webhook:app --reload
 ```
 
 Run tests:
@@ -204,113 +197,62 @@ Run tests:
 pytest
 ```
 
-Regenerate synthetic failed-payment data:
+Generate synthetic data:
 
 ```bash
 python generate_failed_payments.py
 ```
 
-## Sample Output
-
-Example output from `python -m app.run_recovery`:
+## Sample Batch Output
 
 ```text
 Loaded 56 payments
 
 Recovery decisions:
-  send_payment_link: 8
-  escalate_to_human: 11
-  retry_now: 17
-  retry_delayed: 20
+  send_payment_link: 4
+  retry_now: 33
+  retry_delayed: 16
+  escalate_to_human: 3
 
 Processed: 56 payments
 
 Escalated cases:
-  fail_0002
-  fail_0005
-  fail_0009
-  fail_0012
-  fail_0014
-  fail_0023
-  fail_0024
   fail_0038
   fail_0043
   fail_0048
-  fail_0053
 ```
 
-## Testing
+Audit entries are saved in `data/audit_log.json`.
 
-The test suite covers the core decision logic:
+## Tests
 
-- `tests/test_classifier.py` checks deterministic recovery rules.
-- `tests/test_validator.py` checks safety overrides.
-- `tests/test_pipeline.py` checks that ambiguous failures can pass through the full pipeline.
+The test suite covers:
 
-Run all tests with:
+- rule-based classifier behavior
+- validator safety overrides
+- executor behavior with Razorpay payment-link creation mocked
+- pipeline behavior with LLM and audit saving mocked
+- webhook request handling
 
-```bash
-pytest
-```
+External API calls are mocked in automated tests. Manual smoke scripts are kept under `tests/` and guarded so they do not run during normal pytest collection.
 
 Current local result:
 
 ```text
-13 passed
+17 passed
 ```
 
-## Design Decisions And Trade-Offs
+## Design Decisions
 
-- **Rules before LLM**: Most payment failures have predictable recovery behavior. Rules make those decisions fast, testable, and explainable.
-- **LLM only for ambiguous failures**: The LLM is used for cases like issuer declines and gateway errors, where structured failure data may not be enough.
-- **Bounded automation**: The system stops automatic recovery after three attempts. This prevents repeated retries from creating customer frustration or operational risk.
-- **Validation after AI**: LLM output is treated as a recommendation, not final truth. The validator checks whether the decision is safe before accepting it.
-- **Synthetic data first**: The repo uses generated payment data so the pipeline can be demonstrated without exposing real customer or merchant information.
-
-## Current Scope
-
-This repository currently demonstrates the decisioning and validation layer of a payment recovery workflow. It does not yet perform real Razorpay payment retries or create live Razorpay payment links. In a production Razorpay integration, this agent would sit behind payment failure webhooks and call Razorpay test-mode or live APIs depending on merchant configuration.
-
-Expected production flow:
-
-```text
-Razorpay payment.failed webhook
-        |
-        v
-recovery-agent receives failed payment
-        |
-        v
-classifier or LLM chooses action
-        |
-        v
-validator checks retry limits and safety rules
-        |
-        v
-Razorpay API call / payment link / escalation queue
-        |
-        v
-audit log and recovery report
-```
+- **Rules first**: deterministic logic is better for common payment failures because it is fast, cheap, and easy to audit.
+- **LLM only for ambiguity**: the LLM is used for issuer and gateway responses where rigid rules may be too limited.
+- **Validation after LLM**: structured output improves formatting, but business safety still belongs in code.
+- **Payment Links before retries**: Razorpay test-mode Payment Links are safer and easier to demonstrate than real payment retry orchestration.
+- **Audit trail by default**: every decision is recorded with source, action, reasoning, confidence, and validator override status.
 
 ## What I Would Build Next
 
-- Add Razorpay test-mode Payment Link API integration for `send_payment_link`.
-- Add persistent audit logging to write every decision to a JSON or SQLite audit store.
-- Add recovery amount tracking so the report can show recovered revenue, unresolved amount, and recovery rate.
-- Extend the same architecture to checkout abandonment, subscription failures, and overdue receivables.
-
-## Submission Notes
-
-The most important command for reviewers is:
-
-```bash
-python -m app.run_recovery
-```
-
-The most important test command is:
-
-```bash
-pytest
-```
-
-The project is intentionally small and explainable. The main engineering idea is that payment recovery should be automated where the decision is clear, AI-assisted where the case is ambiguous, and always bounded by safety rules.
+- Add Razorpay webhook signature verification.
+- Store audit logs in SQLite or Postgres instead of a JSON file.
+- Track recovered amount after payment-link completion callbacks.
+- Add a merchant-facing dashboard for recovery rate, unresolved amount, and failure-reason breakdown.

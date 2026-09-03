@@ -3,3 +3,6 @@ pydantic==2.10.4
 pytest==8.3.4
 openai
 razorpay
+fastapi==0.115.6
+uvicorn==0.34.0
+httpx==0.28.1
